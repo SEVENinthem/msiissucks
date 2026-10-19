@@ -1,0 +1,21 @@
+# msiissucks.service — включить подсветку MSI Mystic Light при старте системы.
+# Шаблон: install.sh подставляет @USER@, @HOME@ и @BIN@.
+
+[Unit]
+Description=MSI Mystic Light: фиолетовая подсветка при старте (msiissucks)
+After=multi-user.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+Environment=HOME=@HOME@
+# i2c-устройства появляются не мгновенно — юнит перезапускается, пока OpenRGB не увидит плату
+ExecStartPre=/usr/bin/install -d -o @USER@ -g @USER@ @HOME@/.local/state/msiissucks
+ExecStart=@BIN@ ON
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

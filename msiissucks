@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# msiissucks — фиолетовая подсветка MSI Mystic Light (через OpenRGB)
+#
+#   msiissucks ON        включить фиолетовый на материнке и RGB-оперативке
+#   msiissucks OFF       выключить подсветку (плата + память)
+#   msiissucks STATUS    что записано в состоянии
+#   msiissucks LIST      список устройств OpenRGB
+#   msiissucks RESCAN    сбросить кэш номера устройства
+#
+# Цвет по умолчанию: 8B00FF. Свой: MSIISSUCKS_COLOR=FF00FF msiissucks ON
+
+set -u
+
+COLOR="${MSIISSUCKS_COLOR:-8B00FF}"   # фиолетовый
+OFF_COLOR="000000"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/msiissucks"
+STATE_FILE="$STATE_DIR/state"
+DEVICE_FILE="$STATE_DIR/device"
+
+msg() { printf '%s\n' "$*"; }
+die() { msg "msiissucks: $*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+msiissucks — фиолетовый Mystic Light на MSI (через OpenRGB)
+
+  msiissucks ON        включить фиолетовый
+  msiissucks OFF       выключить подсветку
+  msiissucks STATUS    текущее состояние
+  msiissucks LIST      показать устройства OpenRGB
+  msiissucks RESCAN    сбросить кэш устройства
+
+Цвет: по умолчанию #$COLOR; свой: MSIISSUCKS_COLOR=FF00FF msiissucks ON
+EOF
+}
+
+# --noautostart есть не во всех версиях openrgb — включаем, если поддерживается
+ORB_FLAGS=""
+openrgb --help 2>&1 | grep -q -- --noautostart && ORB_FLAGS="--noautostart"
+
+# openrgb с фолбэком на sudo, если обычному пользователю отказали в доступе к i2c
+orb() {
+  if [ "$(id -u)" -eq 0 ]; then
+    openrgb $ORB_FLAGS "$@"
+    return $?
+  fi
+  local out rc
+  out=$(openrgb $ORB_FLAGS "$@" 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  if printf '%s' "$out" | grep -qiE 'permission denied|operation not permitted|failed to open|no such file|access'; then
+    out=$(sudo openrgb $ORB_FLAGS "$@" 2>&1); rc=$?
+    if [ $rc -eq 0 ]; then
+      printf '%s' "$out"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$out" >&2
+  return $rc
+}
+
+# ищем материнку и RGB-оперативку (ENE DRAM и т.п.) и кэшируем их номера
+detect_devices() {
+  local list idx
+  list=$(orb --list-devices) ||
+    die "OpenRGB не смог просканировать устройства. Проверь: sudo modprobe i2c-dev && msiissucks LIST"
+  idx=$(printf '%s\n' "$list" | awk -F: '
+    tolower($0) ~ /^[0-9]+:.*(ene|dram|ddr|ram|spd|memory|msi|mystic|motherboard)/ { printf "%s ", $1 }')
+  [ -n "$idx" ] || die "Плата MSI и RGB-память не найдены среди устройств OpenRGB. Список: msiissucks LIST"
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  printf '%s' "$idx" > "$DEVICE_FILE" 2>/dev/null
+  printf '%s' "$idx"
+}
+
+device_indices() {
+  if [ -s "$DEVICE_FILE" ]; then
+    printf '%s' "$(cat "$DEVICE_FILE")"
+  else
+    detect_devices
+  fi
+}
+
+# apply <индекс> <режим> [цвет]
+apply() {
+  local idx="$1" mode="$2" color="${3:-}" err rc
+  if [ -n "$color" ]; then
+    err=$(orb --device "$idx" --mode "$mode" --color "$color" 2>&1); rc=$?
+  else
+    err=$(orb --device "$idx" --mode "$mode" 2>&1); rc=$?
+  fi
+  [ $rc -eq 0 ] && return 0
+  # кэш мог протухнуть — пересканируем один раз и применяем ко всем найденным
+  rm -f "$DEVICE_FILE"
+  local list i ok=0
+  list=$(detect_devices) || { printf '%s\n' "$err" >&2; return 1; }
+  for i in $list; do
+    if [ -n "$color" ]; then
+      orb --device "$i" --mode "$mode" --color "$color" >/dev/null || ok=1
+    else
+      orb --device "$i" --mode "$mode" >/dev/null || ok=1
+    fi
+  done
+  return $ok
+}
+
+# пишем состояние так, чтобы файл остался принадлежать обычному пользователю,
+# даже если ON при старте выполняет root
+save_state() {
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  printf '%s\n' "$1" > "$STATE_FILE" 2>/dev/null || return 0
+  if [ "$(id -u)" -eq 0 ]; then
+    local owner
+    owner=$(stat -c %u "$STATE_DIR" 2>/dev/null) && chown "$owner" "$STATE_FILE" 2>/dev/null
+  fi
+  return 0
+}
+
+cmd_on() {
+  command -v openrgb >/dev/null || die "openrgb не установлен: sudo pacman -S openrgb"
+  local rc=0 idx
+  for idx in $(device_indices); do
+    apply "$idx" static "$COLOR" || rc=1
+  done
+  [ $rc -eq 0 ] || die "не удалось применить цвет ко всем устройствам (подробности выше)"
+  save_state on
+  msg "Включено: фиолетовый #$COLOR (плата + память)"
+}
+
+cmd_off() {
+  command -v openrgb >/dev/null || die "openrgb не установлен: sudo pacman -S openrgb"
+  local rc=0 idx
+  for idx in $(device_indices); do
+    if ! apply "$idx" off; then
+      apply "$idx" static "$OFF_COLOR" || rc=1
+    fi
+  done
+  [ $rc -eq 0 ] || die "не удалось выключить все устройства (подробности выше)"
+  save_state off
+  msg "Выключено."
+}
+
+cmd_status() {
+  local st dev
+  st=$(cat "$STATE_FILE" 2>/dev/null) || st="неизвестно (ещё не переключали)"
+  dev=$(cat "$DEVICE_FILE" 2>/dev/null)
+  msg "Состояние: $st${dev:+, устройства OpenRGB: $dev}"
+}
+
+case "${1:-}" in
+  on|ON)          cmd_on ;;
+  off|OFF)        cmd_off ;;
+  status|STATUS)  cmd_status ;;
+  list|LIST)
+    command -v openrgb >/dev/null || die "openrgb не установлен: sudo pacman -S openrgb"
+    orb --list-devices
+    ;;
+  rescan|RESCAN)  rm -f "$DEVICE_FILE"; msg "Кэш устройства сброшен." ;;
+  ""|-h|--help|help) usage ;;
+  *) usage >&2; die "неизвестная команда: $1" ;;
+esac
