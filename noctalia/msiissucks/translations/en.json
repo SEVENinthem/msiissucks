@@ -1,0 +1,31 @@
+{
+  "button": {
+    "custom": "Custom color…"
+  },
+  "error": {
+    "launch": "Could not start msiissucks",
+    "not_found": "msiissucks not found — check the command path in plugin settings",
+    "timeout": "OpenRGB did not respond in time"
+  },
+  "hint": {
+    "bar": "Left click: on/off · Right click: colors",
+    "panel": "Colors apply to the motherboard and RGB RAM."
+  },
+  "label": {
+    "color": "Color",
+    "error": "Error"
+  },
+  "settings": {
+    "command": {
+      "description": "Path to the msiissucks script.",
+      "label": "Command"
+    }
+  },
+  "state": {
+    "busy": "Applying…",
+    "off": "Off",
+    "on": "On",
+    "unknown": "Unknown"
+  },
+  "tile": "RGB"
+}

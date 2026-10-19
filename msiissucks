@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# msiissucks — фиолетовая подсветка MSI Mystic Light (через OpenRGB)
+# msiissucks — подсветка MSI Mystic Light (через OpenRGB)
 #
-#   msiissucks ON        включить фиолетовый на материнке и RGB-оперативке
-#   msiissucks OFF       выключить подсветку (плата + память)
-#   msiissucks STATUS    что записано в состоянии
-#   msiissucks LIST      список устройств OpenRGB
-#   msiissucks RESCAN    сбросить кэш номера устройства
+#   msiissucks               интерактивное меню (TUI), если запущен в терминале
+#   msiissucks ON [RRGGBB]   включить цвет на материнке и RGB-оперативке
+#   msiissucks OFF           выключить подсветку (плата + память)
+#   msiissucks STATUS        что записано в состоянии
+#   msiissucks LIST          список устройств OpenRGB
+#   msiissucks RESCAN        сбросить кэш номеров устройств
 #
-# Цвет по умолчанию: 8B00FF. Свой: MSIISSUCKS_COLOR=FF00FF msiissucks ON
+# Цвет: аргумент > MSIISSUCKS_COLOR > последний выбранный > 8B00FF (фиолетовый).
 
 set -u
 
-COLOR="${MSIISSUCKS_COLOR:-8B00FF}"   # фиолетовый
+DEFAULT_COLOR="8B00FF"   # фиолетовый
 OFF_COLOR="000000"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/msiissucks"
 STATE_FILE="$STATE_DIR/state"
+COLOR_FILE="$STATE_DIR/color"
 DEVICE_FILE="$STATE_DIR/device"
 
 msg() { printf '%s\n' "$*"; }
@@ -22,21 +24,38 @@ die() { msg "msiissucks: $*" >&2; exit 1; }
 
 usage() {
   cat <<EOF
-msiissucks — фиолетовый Mystic Light на MSI (через OpenRGB)
+msiissucks — Mystic Light на MSI (через OpenRGB)
 
-  msiissucks ON        включить фиолетовый
-  msiissucks OFF       выключить подсветку
-  msiissucks STATUS    текущее состояние
-  msiissucks LIST      показать устройства OpenRGB
-  msiissucks RESCAN    сбросить кэш устройства
+  msiissucks               интерактивное меню
+  msiissucks ON [RRGGBB]   включить (цвет по умолчанию: последний выбранный)
+  msiissucks OFF           выключить подсветку
+  msiissucks STATUS        текущее состояние
+  msiissucks LIST          показать устройства OpenRGB
+  msiissucks RESCAN        сбросить кэш устройств
 
-Цвет: по умолчанию #$COLOR; свой: MSIISSUCKS_COLOR=FF00FF msiissucks ON
+Цвет можно задать и так: MSIISSUCKS_COLOR=FF00FF msiissucks ON
 EOF
+}
+
+# RRGGBB / #rrggbb -> RRGGBB; пусто, если это не цвет
+normalize_color() {
+  local c="${1#\#}"
+  [[ "$c" =~ ^[0-9A-Fa-f]{6}$ ]] && printf '%s' "${c^^}"
+}
+
+saved_color() {
+  local c
+  c=$(normalize_color "$(cat "$COLOR_FILE" 2>/dev/null)")
+  printf '%s' "${c:-$DEFAULT_COLOR}"
 }
 
 # --noautostart есть не во всех версиях openrgb — включаем, если поддерживается
 ORB_FLAGS=""
-openrgb --help 2>&1 | grep -q -- --noautostart && ORB_FLAGS="--noautostart"
+init_openrgb() {
+  command -v openrgb >/dev/null || die "openrgb не установлен: sudo pacman -S openrgb"
+  openrgb --help 2>&1 | grep -q -- --noautostart && ORB_FLAGS="--noautostart"
+  return 0
+}
 
 # openrgb с фолбэком на sudo, если обычному пользователю отказали в доступе к i2c
 orb() {
@@ -51,7 +70,9 @@ orb() {
     return 0
   fi
   if printf '%s' "$out" | grep -qiE 'permission denied|operation not permitted|failed to open|no such file|access'; then
-    out=$(sudo openrgb $ORB_FLAGS "$@" 2>&1); rc=$?
+    # из терминала sudo может спросить пароль, из виджета/автозапуска — нет
+    local sudo_flags="-n"; [ -t 0 ] && sudo_flags=""
+    out=$(sudo $sudo_flags openrgb $ORB_FLAGS "$@" 2>&1); rc=$?
     if [ $rc -eq 0 ]; then
       printf '%s' "$out"
       return 0
@@ -105,31 +126,51 @@ apply() {
   return $ok
 }
 
-# пишем состояние так, чтобы файл остался принадлежать обычному пользователю,
+# пишем файл состояния так, чтобы он остался принадлежать обычному пользователю,
 # даже если ON при старте выполняет root
-save_state() {
+write_state() {
+  local file="$1" value="$2"
   mkdir -p "$STATE_DIR" 2>/dev/null
-  printf '%s\n' "$1" > "$STATE_FILE" 2>/dev/null || return 0
+  printf '%s\n' "$value" > "$file" 2>/dev/null || return 0
   if [ "$(id -u)" -eq 0 ]; then
     local owner
-    owner=$(stat -c %u "$STATE_DIR" 2>/dev/null) && chown "$owner" "$STATE_FILE" 2>/dev/null
+    owner=$(stat -c %u "$STATE_DIR" 2>/dev/null) && chown "$owner" "$file" 2>/dev/null
   fi
   return 0
 }
 
+# один openrgb за раз: TUI, виджет и автозапуск могут дёрнуть скрипт одновременно
+lock() {
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  command -v flock >/dev/null || return 0
+  exec 9<"$STATE_DIR"
+  flock -w 60 9 || die "другой экземпляр msiissucks слишком долго держит блокировку"
+}
+
 cmd_on() {
-  command -v openrgb >/dev/null || die "openrgb не установлен: sudo pacman -S openrgb"
+  local color
+  if [ -n "${1:-}" ]; then
+    color=$(normalize_color "$1") || true
+    [ -n "$color" ] || die "неправильный цвет: $1 (нужно RRGGBB, например 8B00FF)"
+  else
+    color=$(normalize_color "${MSIISSUCKS_COLOR:-}") || true
+    color="${color:-$(saved_color)}"
+  fi
+  init_openrgb
+  lock
   local rc=0 idx
   for idx in $(device_indices); do
-    apply "$idx" static "$COLOR" || rc=1
+    apply "$idx" static "$color" || rc=1
   done
   [ $rc -eq 0 ] || die "не удалось применить цвет ко всем устройствам (подробности выше)"
-  save_state on
-  msg "Включено: фиолетовый #$COLOR (плата + память)"
+  write_state "$STATE_FILE" on
+  write_state "$COLOR_FILE" "$color"
+  msg "Включено: #$color (плата + память)"
 }
 
 cmd_off() {
-  command -v openrgb >/dev/null || die "openrgb не установлен: sudo pacman -S openrgb"
+  init_openrgb
+  lock
   local rc=0 idx
   for idx in $(device_indices); do
     if ! apply "$idx" off; then
@@ -137,7 +178,7 @@ cmd_off() {
     fi
   done
   [ $rc -eq 0 ] || die "не удалось выключить все устройства (подробности выше)"
-  save_state off
+  write_state "$STATE_FILE" off
   msg "Выключено."
 }
 
@@ -145,18 +186,169 @@ cmd_status() {
   local st dev
   st=$(cat "$STATE_FILE" 2>/dev/null) || st="неизвестно (ещё не переключали)"
   dev=$(cat "$DEVICE_FILE" 2>/dev/null)
-  msg "Состояние: $st${dev:+, устройства OpenRGB: $dev}"
+  msg "Состояние: $st, цвет: #$(saved_color)${dev:+, устройства OpenRGB: $dev}"
+}
+
+# ── TUI ──────────────────────────────────────────────────────────────────────
+
+PRESETS=(
+  "8B00FF Фиолетовый"
+  "FF00FF Пурпурный"
+  "FF0040 Малиновый"
+  "FF0000 Красный"
+  "FF6000 Оранжевый"
+  "FFD000 Жёлтый"
+  "00FF40 Зелёный"
+  "00FFD0 Бирюзовый"
+  "0040FF Синий"
+  "FFFFFF Белый"
+)
+
+# цветной квадратик через truecolor; на скучных терминалах просто пробелы
+swatch() {
+  local c="$1"
+  printf '\e[48;2;%d;%d;%dm    \e[0m' "0x${c:0:2}" "0x${c:2:2}" "0x${c:4:2}"
+}
+
+tui_cleanup() { printf '\e[?25h\e[0m'; stty echo 2>/dev/null; }
+
+# читает одну клавишу: up/down/enter/q/или сам символ
+read_key() {
+  local k rest
+  IFS= read -rsn1 k || { printf 'q'; return; }
+  case "$k" in
+    $'\e')
+      IFS= read -rsn2 -t 0.05 rest || true
+      case "$rest" in
+        '[A'|'OA') printf 'up' ;;
+        '[B'|'OB') printf 'down' ;;
+        *) printf 'q' ;;
+      esac ;;
+    '') printf 'enter' ;;
+    k|K) printf 'up' ;;
+    j|J) printf 'down' ;;
+    *) printf '%s' "$k" ;;
+  esac
+}
+
+TUI_NOTE=""
+
+tui_header() {
+  local st color
+  st=$(cat "$STATE_FILE" 2>/dev/null || printf '?')
+  color=$(saved_color)
+  printf '\e[H\e[2J'
+  printf '  \e[1mmsiissucks\e[0m  ·  MSI Mystic Light\n\n'
+  if [ "$st" = on ]; then
+    printf '  Сейчас: \e[1mвкл\e[0m  %s  #%s\n' "$(swatch "$color")" "$color"
+  else
+    printf '  Сейчас: \e[2mвыкл\e[0m  (последний цвет %s #%s)\n' "$(swatch "$color")" "$color"
+  fi
+  printf '\n'
+}
+
+# menu <заголовок> <пункт>... — печатает индекс выбранного пункта или -1
+menu() {
+  local title="$1"; shift
+  local items=("$@") sel=0 i key n=$#
+  while :; do
+    tui_header >&2
+    printf '  \e[2m%s\e[0m\n\n' "$title" >&2
+    for i in "${!items[@]}"; do
+      if [ "$i" -eq "$sel" ]; then
+        printf '  \e[7m ▸ %s \e[0m\n' "${items[$i]}" >&2
+      else
+        printf '    %s\n' "${items[$i]}" >&2
+      fi
+    done
+    printf '\n  \e[2m↑/↓ или j/k — выбор, Enter — ок, q — назад\e[0m\n' >&2
+    [ -n "$TUI_NOTE" ] && printf '\n  %s\n' "$TUI_NOTE" >&2
+    key=$(read_key)
+    case "$key" in
+      up)    sel=$(( (sel + n - 1) % n )) ;;
+      down)  sel=$(( (sel + 1) % n )) ;;
+      enter) printf '%s' "$sel"; return ;;
+      q|Q)   printf '%s' -1; return ;;
+      [1-9]) [ "$key" -le "$n" ] && { printf '%s' $((key - 1)); return; } ;;
+    esac
+  done
+}
+
+# запускает себя в фоне и крутит спиннер, пока openrgb работает (~5 c)
+tui_run() {
+  local label="$1"; shift
+  local out pid frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
+  out=$(mktemp)
+  "$0" "$@" >"$out" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r  %s %s…' "${frames:i++%${#frames}:1}" "$label"
+    sleep 0.1
+  done
+  if wait "$pid"; then
+    TUI_NOTE=$'\e[32m✓\e[0m '"$(tail -n1 "$out")"
+  else
+    TUI_NOTE=$'\e[31m✗\e[0m '"$(tail -n1 "$out")"
+  fi
+  rm -f "$out"
+  # выкидываем клавиши, нажатые, пока ждали openrgb
+  local junk
+  while IFS= read -rsn1 -t 0.01 junk; do :; done
+}
+
+tui_pick_color() {
+  local items=() p i hex
+  for p in "${PRESETS[@]}"; do
+    items+=("$(swatch "${p%% *}")  ${p#* }  #${p%% *}")
+  done
+  items+=("Свой цвет (hex)…")
+  i=$(menu "Выбери цвет — применится сразу" "${items[@]}")
+  TUI_NOTE=""
+  [ "$i" -ge 0 ] || return 0
+  if [ "$i" -lt "${#PRESETS[@]}" ]; then
+    hex="${PRESETS[$i]%% *}"
+  else
+    tui_header
+    printf '\e[?25h'; stty echo 2>/dev/null
+    read -rp "  Цвет RRGGBB: #" hex
+    printf '\e[?25l'; stty -echo 2>/dev/null
+    hex=$(normalize_color "$hex") || true
+    [ -n "$hex" ] || { TUI_NOTE=$'\e[31m✗\e[0m Это не цвет — нужно 6 hex-цифр, например 8B00FF'; return 0; }
+  fi
+  tui_run "Ставлю #$hex" ON "$hex"
+}
+
+tui() {
+  trap tui_cleanup EXIT
+  trap 'exit 130' INT TERM
+  printf '\e[?25l'
+  local i
+  while :; do
+    i=$(menu "Что делаем?" "Включить" "Выключить" "Выбрать цвет…" "Устройства OpenRGB" "Выход")
+    TUI_NOTE=""
+    case "$i" in
+      0) tui_run "Включаю" ON ;;
+      1) tui_run "Выключаю" OFF ;;
+      2) tui_pick_color ;;
+      3)
+        tui_header
+        printf '  Сканирую…\r'
+        "$0" LIST 2>&1 | sed 's/^/  /'
+        printf '\n  \e[2mлюбая клавиша — назад\e[0m'
+        read_key >/dev/null
+        ;;
+      *) printf '\e[H\e[2J'; return 0 ;;
+    esac
+  done
 }
 
 case "${1:-}" in
-  on|ON)          cmd_on ;;
+  on|ON)          cmd_on "${2:-}" ;;
   off|OFF)        cmd_off ;;
   status|STATUS)  cmd_status ;;
-  list|LIST)
-    command -v openrgb >/dev/null || die "openrgb не установлен: sudo pacman -S openrgb"
-    orb --list-devices
-    ;;
+  list|LIST)      init_openrgb; orb --list-devices ;;
   rescan|RESCAN)  rm -f "$DEVICE_FILE"; msg "Кэш устройства сброшен." ;;
-  ""|-h|--help|help) usage ;;
+  "")             if [ -t 0 ] && [ -t 1 ]; then tui; else usage; fi ;;
+  -h|--help|help) usage ;;
   *) usage >&2; die "неизвестная команда: $1" ;;
 esac

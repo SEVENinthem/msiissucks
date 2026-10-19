@@ -1,0 +1,31 @@
+{
+  "button": {
+    "custom": "Свой цвет…"
+  },
+  "error": {
+    "launch": "Не удалось запустить msiissucks",
+    "not_found": "msiissucks не найден — проверь путь в настройках плагина",
+    "timeout": "OpenRGB не ответил вовремя"
+  },
+  "hint": {
+    "bar": "ЛКМ: вкл/выкл · ПКМ: цвета",
+    "panel": "Цвет применяется к плате и RGB-памяти."
+  },
+  "label": {
+    "color": "Цвет",
+    "error": "Ошибка"
+  },
+  "settings": {
+    "command": {
+      "description": "Путь к скрипту msiissucks.",
+      "label": "Команда"
+    }
+  },
+  "state": {
+    "busy": "Применяю…",
+    "off": "Выкл",
+    "on": "Вкл",
+    "unknown": "Неизвестно"
+  },
+  "tile": "Подсветка"
+}

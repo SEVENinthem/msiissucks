@@ -2,13 +2,16 @@
 
 > Потому что MSI Center под Linux нет, а фиолетовая подсветка нужна.
 
-Маленький bash-скрипт поверх [OpenRGB](https://openrgb.org), который одной командой включает
-или гасит подсветку **MSI Mystic Light** на материнской плате **и RGB-оперативке**, плюс
-systemd-юнит, чтобы цвет включался сам при загрузке.
+Bash-скрипт поверх [OpenRGB](https://openrgb.org), который включает, гасит и перекрашивает
+подсветку **MSI Mystic Light** на материнской плате **и RGB-оперативке** — из терминала,
+из интерактивного меню или прямо из панели [Noctalia Shell](https://noctalia.dev).
+Плюс systemd-юнит, чтобы цвет включался сам при загрузке.
 
 ```console
 $ msiissucks ON
-Включено: фиолетовый #8B00FF (плата + память)
+Включено: #8B00FF (плата + память)
+$ msiissucks ON 00FFD0
+Включено: #00FFD0 (плата + память)
 $ msiissucks OFF
 Выключено.
 ```
@@ -16,10 +19,13 @@ $ msiissucks OFF
 ## Возможности
 
 - `ON` / `OFF` для всех найденных устройств сразу — плата + плашки памяти (ENE DRAM и т.п.)
-- свой цвет через переменную окружения `MSIISSUCKS_COLOR`
-- автопоиск устройств в `openrgb --list-devices` с кэшем индексов; кэш сам сбрасывается и
+- любой цвет; последний выбранный запоминается и включается при загрузке
+- **TUI**: `msiissucks` без аргументов — меню со стрелками, палитрой и превью цвета
+- **плагин Noctalia**: лампочка в баре цветом подсветки, плитка в центре управления
+  и панель с палитрой и колор-пикером
+- автопоиск устройств в `openrgb --list-devices` с кэшем индексов; кэш сам
   пересканируется, если индексы поменялись
-- фолбэк на `sudo`, если нет прав на `/dev/i2c-*`
+- блокировка: TUI, бар и автозапуск не дерутся за OpenRGB
 - systemd-юнит с ретраями: i2c-шина появляется не сразу после старта, юнит ждёт её
 
 ## Требования
@@ -28,46 +34,88 @@ $ msiissucks OFF
 - [OpenRGB](https://openrgb.org) ≥ 0.9 (проверено на 1.0)
 - модуль `i2c-dev` (пакет `openrgb` в Arch подгружает его сам)
 - плата MSI с Mystic Light (проверено на **MSI B760 GAMING PLUS WIFI / MS-7D98**)
+- для плагина — Noctalia ≥ 5 (plugin API 26)
 
 ## Установка
 
 ```bash
 git clone https://github.com/SEVENinthem/msiissucks.git
 cd msiissucks
-./install.sh --service   # без --service — только скрипт, без автозапуска
+./install.sh --service --noctalia
 ```
 
-Скрипт ставится в `~/.local/bin/msiissucks`, юнит — в `/etc/systemd/system/msiissucks.service`.
-Убедись, что `~/.local/bin` есть в `PATH`.
+| Флаг          | Что ставит                                                          |
+| ------------- | ------------------------------------------------------------------- |
+| _(без флагов)_ | только скрипт в `~/.local/bin/msiissucks`                          |
+| `--service`   | + юнит автозапуска `/etc/systemd/system/msiissucks.service` (sudo) |
+| `--noctalia`  | + плагин Noctalia из `~/.local/share/msiissucks/noctalia`           |
+| `--uninstall` | убирает всё обратно                                                 |
 
-Удаление: `./install.sh --uninstall`.
+Убедись, что `~/.local/bin` есть в `PATH`.
 
 ## Использование
 
-| Команда              | Что делает                                    |
-| -------------------- | --------------------------------------------- |
-| `msiissucks ON`      | включить цвет (по умолчанию `#8B00FF`)        |
-| `msiissucks OFF`     | выключить подсветку                           |
-| `msiissucks STATUS`  | последнее состояние и закэшированные устройства |
-| `msiissucks LIST`    | список устройств OpenRGB                      |
-| `msiissucks RESCAN`  | сбросить кэш устройств                        |
+### Командная строка
 
-Другой цвет:
+| Команда                    | Что делает                                      |
+| -------------------------- | ----------------------------------------------- |
+| `msiissucks`               | интерактивное меню (в терминале)                |
+| `msiissucks ON [RRGGBB]`   | включить; без цвета — последний выбранный       |
+| `msiissucks OFF`           | выключить подсветку                             |
+| `msiissucks STATUS`        | состояние, цвет и закэшированные устройства     |
+| `msiissucks LIST`          | список устройств OpenRGB                        |
+| `msiissucks RESCAN`        | сбросить кэш устройств                          |
 
-```bash
-MSIISSUCKS_COLOR=FF00FF msiissucks ON
+Цвет выбирается так: аргумент → `MSIISSUCKS_COLOR` → последний выбранный → `8B00FF`.
+
+### TUI
+
+```
+  msiissucks  ·  MSI Mystic Light
+
+  Сейчас: вкл  ████  #8B00FF
+
+  Что делаем?
+
+   ▸ Включить
+    Выключить
+    Выбрать цвет…
+    Устройства OpenRGB
+    Выход
+
+  ↑/↓ или j/k — выбор, Enter — ок, q — назад
 ```
 
+В «Выбрать цвет…» — 10 пресетов с цветными плашками и ввод своего hex. Цвет применяется сразу.
+
+### Noctalia Shell
+
+После `./install.sh --noctalia`:
+
+- **Виджет в баре** — Настройки → Панель → Добавить виджет → `msiissucks`.
+  Лампочка горит текущим цветом. ЛКМ — вкл/выкл, ПКМ — панель с цветами.
+- **Плитка** — Настройки → Центр управления → Ярлыки → `msiissucks`.
+- **Панель** — палитра, переключатель и «Свой цвет…» (нативный колор-пикер Noctalia).
+
+IPC, например для хоткея в niri:
+
+```bash
+noctalia msg plugin seveninthem/msiissucks:service all toggle
+noctalia msg plugin seveninthem/msiissucks:service all on FF00FF
+noctalia msg panel-toggle seveninthem/msiissucks:panel
+```
+
+Плагин сам ничего не делает с железом — он вызывает `msiissucks`, поэтому бар, TUI и
+автозапуск всегда показывают одно и то же состояние.
+
 > [!NOTE]
-> `OFF` гасит подсветку до перезагрузки — при старте юнит снова включит цвет.
-> Чтобы цвет при загрузке был другим, добавь в юнит `Environment=MSIISSUCKS_COLOR=...`
-> (`sudo systemctl edit msiissucks`).
+> `OFF` гасит подсветку до перезагрузки — при старте юнит снова включит последний цвет.
 
 ## Как это работает
 
 1. `openrgb --list-devices` → ищутся строки, похожие на плату или RGB-память
    (`msi|mystic|motherboard|ene|dram|ddr|ram|spd|memory`).
-2. Индексы кэшируются в `~/.local/state/msiissucks/device`.
+2. Индексы кэшируются в `~/.local/state/msiissucks/device`, состояние и цвет — в `state` и `color`.
 3. Для каждого устройства: `openrgb --device N --mode static --color RRGGBB`
    (для `OFF` — режим `off`, а если устройство его не знает — `static 000000`).
 
@@ -77,6 +125,7 @@ MSIISSUCKS_COLOR=FF00FF msiissucks ON
   Если плата есть в списке, но не подходит под регэксп — открой issue с выводом `LIST`.
 - **Permission denied** → проверь udev-правила OpenRGB (`60-openrgb.rules`) или запусти через `sudo`.
 - **Юнит висит в activating** → `journalctl -u msiissucks -b`.
+- **Плагин пишет «msiissucks не найден»** → укажи путь к скрипту в настройках плагина.
 
 ## Лицензия
 

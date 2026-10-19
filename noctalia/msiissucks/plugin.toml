@@ -1,0 +1,50 @@
+# msiissucks — MSI Mystic Light (motherboard + RGB RAM) from the Noctalia bar.
+#
+# The headless [[service]] owns the `msiissucks` script: it runs ON/OFF, publishes
+# "status" and re-reads the script's state files, so changes made from the TUI or
+# the boot unit show up here too. The bar widget, control-center tile and panel are
+# thin clients: they render "status" and write to the "command" channel.
+#
+# Widget: left click = on/off, right click = color panel.
+# IPC:    noctalia msg plugin seveninthem/msiissucks:service all on [RRGGBB] | off | toggle
+
+id = "seveninthem/msiissucks"
+name = "msiissucks"
+version = "1.0.0"
+plugin_api = 26
+author = "SEVENinthem"
+license = "MIT"
+dependencies = ["openrgb"]
+tags = ["rgb", "msi", "openrgb", "hardware"]
+icon = "bulb"
+description = "MSI Mystic Light on/off and color picker (motherboard + RGB RAM) via OpenRGB."
+
+[[setting]]
+key = "command"
+type = "string"
+label_key = "settings.command.label"
+description_key = "settings.command.description"
+default = "~/.local/bin/msiissucks"
+
+[[service]]
+id = "service"
+entry = "service.luau"
+
+[[widget]]
+id = "bar"
+entry = "bar.luau"
+
+  [widget.actions]
+  middle = "none"
+
+[[shortcut]]
+id = "toggle"
+entry = "shortcut.luau"
+
+# Open with: noctalia msg panel-toggle seveninthem/msiissucks:panel
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 360
+height = 330
+placement = "attached"
